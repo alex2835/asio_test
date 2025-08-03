@@ -96,3 +96,4 @@ int main()
         std::cerr << "Fatal: " << e.what() << "\n";
     }
 }
+
