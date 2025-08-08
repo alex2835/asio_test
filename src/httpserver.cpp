@@ -1,99 +1,66 @@
+//
+// timeout.cpp
+// ~~~~~~~~~~~
+//
+// Copyright (c) 2003-2025 Christopher M. Kohlhoff (chris at kohlhoff dot com)
+//
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+//
+
 #include <boost/asio.hpp>
-#include <boost/beast.hpp>
-#include <iostream>
-#include <print>
+#include <boost/asio/experimental/awaitable_operators.hpp>
 
-namespace asio = boost::asio;
-namespace beast = boost::beast;
-namespace http = beast::http;
-using tcp = asio::ip::tcp;
-using asio::awaitable;
-using asio::co_spawn;
-using asio::detached;
-using asio::use_awaitable;
+using namespace boost::asio;
+using namespace boost::asio::experimental::awaitable_operators;
+using time_point = std::chrono::steady_clock::time_point;
+using ip::tcp;
 
-awaitable<void> handle_session( tcp::socket socket )
+awaitable<void> echo(tcp::socket& sock, time_point& deadline)
 {
-    try
-    {
-        auto endpoint = socket.remote_endpoint();
-        std::string client_ip = endpoint.address().to_string();
-        std::cout << "New connection from: " << client_ip << "\n";
-
-        beast::flat_buffer buffer;
-        http::request<http::string_body> request;
-
-        // Read request
-        co_await http::async_read( socket, buffer, request, use_awaitable );
-
-        http::response<http::string_body> response( http::status::ok, request.version() );
-        response.set( http::field::server, "Async-Beast" );
-        response.set( http::field::content_type, "text/plain" );
-
-        if ( request.method() != http::verb::get )
-        {
-            response.result( http::status::bad_request );
-            response.body() = "Only GET supported";
-        }
-        else
-        {
-            std::string path = std::string( request.target() );
-
-            if ( path == "/" )
-            {
-                response.body() = "Welcome to the root endpoint!";
-            }
-            else if ( path == "/status" )
-            {
-                response.body() = "Status: OK";
-            }
-            else if ( path == "/api/info" )
-            {
-                response.body() = "Info: version 1.0";
-            }
-            else
-            {
-                response.result( http::status::not_found );
-                response.body() = "404 Not Found";
-            }
-        }
-
-        response.prepare_payload();
-        co_await http::async_write( socket, response, use_awaitable );
-
-        beast::error_code ec;
-        socket.shutdown( tcp::socket::shutdown_send, ec );
-    }
-    catch ( std::exception& e )
-    {
-        std::cerr << "Session error: " << e.what() << "\n";
-    }
+  char data[4196];
+  for (;;)
+  {
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    auto n = co_await sock.async_read_some(buffer(data), use_awaitable);
+    co_await async_write(sock, buffer(data, n), use_awaitable);
+  }
 }
 
-awaitable<void> listener( uint16_t port )
+awaitable<void> watchdog(time_point& deadline)
 {
-    auto executor = co_await asio::this_coro::executor;
-    tcp::acceptor acceptor( executor, { tcp::v4(), port } );
-    std::cout << "Listening on http://127.0.0.1:" << port << "\n";
+  steady_timer timer(co_await this_coro::executor);
+  auto now = std::chrono::steady_clock::now();
+  while (deadline > now)
+  {
+    timer.expires_at(deadline);
+    co_await timer.async_wait(use_awaitable);
+    now = std::chrono::steady_clock::now();
+  }
+  throw boost::system::system_error(std::make_error_code(std::errc::timed_out));
+}
 
-    for ( ;;)
-    {
-        tcp::socket socket = co_await acceptor.async_accept( use_awaitable );
-        co_spawn( executor, handle_session( std::move( socket ) ), detached );
-    }
+awaitable<void> handle_connection(tcp::socket sock)
+{
+  time_point deadline{};
+  co_await (echo(sock, deadline) && watchdog(deadline));
+}
+
+awaitable<void> listen(tcp::acceptor& acceptor)
+{
+  for (;;)
+  {
+    co_spawn(
+        acceptor.get_executor(),
+        handle_connection(co_await acceptor.async_accept(use_awaitable)),
+        detached);
+  }
 }
 
 int main()
 {
-    try
-    {
-        asio::io_context io;
-        co_spawn( io, listener( 8080 ), detached );
-        io.run();
-    }
-    catch ( const std::exception& e )
-    {
-        std::cerr << "Fatal: " << e.what() << "\n";
-    }
+  io_context ctx;
+  tcp::acceptor acceptor(ctx, {tcp::v4(), 54321});
+  co_spawn(ctx, listen(acceptor), detached);
+  ctx.run();
 }
-
