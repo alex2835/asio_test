@@ -41,3 +41,6 @@ target_link_libraries(canselation_state PRIVATE common_deps)
 
 add_executable(channels1 src/channels1.cpp)
 target_link_libraries(channels1 PRIVATE common_deps)
+
+add_executable(sleep_sort src/sleep_sort.cpp)
+target_link_libraries(sleep_sort PRIVATE common_deps)
