@@ -27,8 +27,6 @@ awaitable<void> sleep_sort(std::vector<int> numbers) {
             co_return;
         }, detached);
     }
-    // Wait for all coroutines to finish
-    co_await boost::asio::this_coro::executor;
 }
 
 
